@@ -1,13 +1,19 @@
 const express = require('express');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
+const cookieParser = require('cookie-parser');
 require('dotenv').config()
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const app = express();
 const port = process.env.PORT || 5000;
 
 // middleware
-app.use(cors());
+app.use(cors({
+    origin: ['http://localhost:5173'],
+    credentials: true
+}));
 app.use(express.json());
+app.use(cookieParser());
 
 
 
@@ -27,12 +33,50 @@ const client = new MongoClient(uri, {
 const serviceCollections = client.db('carDoctor').collection('services');
 const checkoutCollections = client.db('carDoctor').collection('checkout');
 
+const logger = async (req, res, next) => {
+    console.log('called:', req.host, req.originalUrl);
+    next();
+}
+const verifyToken = async(req, res, next) => {
+    const token = req.cookies?.accessToken;
+    console.log('verify:', token)
+    if(!token){
+        return res.status(401).send({message: 'Not Authorize'})
+    }
+    jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (error, decode) => {
+        if(error){
+            console.log(error)
+            return res.status(401).send({message: 'Unauthorize'})
+        }
+        console.log('value of decode:', decode);
+        req.user = decode;
+        next();
+    })
+}
+
 async function run() {
     try {
         // Connect the client to the server	(optional starting in v4.7)
         await client.connect();
 
-        app.get('/services', async (req, res) => {
+        // auth api
+        app.post('/jwt', logger, async (req, res) => {
+            const user = req.body;
+            console.log(user);
+            const token = jwt.sign(user, process.env.ACCESS_TOKEN_SECRET, { expiresIn: '1h' });
+
+            res
+                .cookie('accessToken', token, {
+                    httpOnly: true,
+                    secure: false
+                })
+                .send({ success: true })
+        })
+
+
+
+        // client api
+        app.get('/services', logger, async (req, res) => {
             const courser = serviceCollections.find();
             const result = await courser.toArray();
             res.send(result);
@@ -45,7 +89,13 @@ async function run() {
             res.send(result);
         })
 
-        app.get('/checkouts', async (req, res) => {
+        app.get('/checkouts', logger, verifyToken, async (req, res) => {
+            console.log('token', req.cookies.accessToken)
+
+            if(req.query.email !== req.user.email){
+                return res.status(403).send({message: 'Forbidden access'})
+            }
+
             let query = {};
             if (req.query?.email) {
                 query = { email: req.query.email };
@@ -69,7 +119,7 @@ async function run() {
                     status: update.status
                 }
             };
-            const result = await checkoutCollections.updateOne(filter,updateCheckout);
+            const result = await checkoutCollections.updateOne(filter, updateCheckout);
             res.send(result);
         })
 
